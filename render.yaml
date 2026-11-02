@@ -1,0 +1,39 @@
+# Render Blueprint - everything on FREE plans. See DEPLOYMENT.md section 4 for caveats
+# (free Postgres expires after 30 days, free Key Value is in-memory, free web service sleeps and has no disk).
+databases:
+  - name: customs-idp-db
+    plan: free
+    databaseName: customs_idp
+    user: customs_idp
+
+services:
+  - type: keyvalue
+    name: customs-idp-redis
+    plan: free
+    maxmemoryPolicy: noeviction
+    ipAllowList: []            # private network access only
+
+  - type: web
+    name: customs-idp-api
+    runtime: docker
+    plan: free
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - {key: ENVIRONMENT, value: production}
+      - {key: DATABASE_URL, fromDatabase: {name: customs-idp-db, property: connectionString}}
+      - {key: REDIS_URL, fromService: {type: keyvalue, name: customs-idp-redis, property: connectionString}}
+      - {key: SECRET_KEY, generateValue: true}
+      - {key: AES_ENCRYPTION_KEY, generateValue: true}
+      - {key: SUPERADMIN_EMAIL, sync: false}
+      - {key: SUPERADMIN_INIT_PASSWORD, sync: false}
+      - {key: SEED_DEMO_DATA, value: "false"}
+      - {key: AI_PROVIDER, value: mock}          # mock | gemini | ollama  (see DEPLOYMENT.md)
+      - {key: GEMINI_API_KEY, sync: false}
+      - {key: SMTP_HOST, sync: false}            # use a provider that supports port 2525 (25/465/587 are blocked on free)
+      - {key: SMTP_PORT, value: "2525"}
+      - {key: SMTP_USER, sync: false}
+      - {key: SMTP_PASSWORD, sync: false}
+      - {key: SMTP_FROM, sync: false}
+      - {key: CORS_ORIGINS, value: ""}
+      - {key: AI_MAX_PAGES, value: "2"}          # keep memory low on small free instances

@@ -1,0 +1,49 @@
+# docker-compose up --build   ->  API on http://localhost:8000  (docs at /docs in development)
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: customs
+      POSTGRES_PASSWORD: customs
+      POSTGRES_DB: customs_idp
+    volumes: [pgdata:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U customs -d customs_idp"]
+      interval: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--save", "", "--maxmemory", "64mb", "--maxmemory-policy", "noeviction"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      retries: 10
+
+  api:
+    build: .
+    env_file: [.env]
+    environment:
+      DATABASE_URL: postgresql+asyncpg://customs:customs@db:5432/customs_idp
+      REDIS_URL: redis://redis:6379/0
+      OLLAMA_BASE_URL: http://ollama:11434
+    ports: ["8000:8000"]
+    volumes: [uploads:/app/storage]
+    mem_limit: 512m          # mirrors a small free-tier instance
+    depends_on:
+      db: {condition: service_healthy}
+      redis: {condition: service_healthy}
+
+  # Optional fully-local AI (no data leaves your machine):  docker compose --profile local-ai up --build
+  # then: docker compose exec ollama ollama pull gemma3:4b && docker compose exec ollama ollama pull embeddinggemma
+  # and set AI_PROVIDER=ollama in .env
+  ollama:
+    image: ollama/ollama:latest
+    profiles: ["local-ai"]
+    volumes: [ollama:/root/.ollama]
+    ports: ["11434:11434"]
+
+volumes:
+  pgdata:
+  uploads:
+  ollama:
