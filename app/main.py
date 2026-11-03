@@ -40,8 +40,14 @@ app = FastAPI(
 )
 
 if settings.cors_origins_list:
-    app.add_middleware(CORSMiddleware, allow_origins=settings.cors_origins_list, allow_credentials=False,
-                       allow_methods=["GET", "POST", "PATCH"], allow_headers=["Authorization", "Content-Type"])
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=settings.cors_origins_list,
+        # The frontend uses bearer tokens in the Authorization header, not cookies.
+        allow_credentials=False,
+        allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
+        allow_headers=["Authorization", "Content-Type"],
+    )
 
 
 @app.middleware("http")
