@@ -3,7 +3,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, RedirectResponse
 from redis.exceptions import RedisError
 
 from app.api.v1.api import api_router
@@ -34,20 +34,30 @@ async def lifespan(_: FastAPI):
 
 
 app = FastAPI(
-    title=settings.APP_NAME, version="1.0.0", lifespan=lifespan,
+    title=settings.APP_NAME,
+    version="1.0.0",
+    lifespan=lifespan,
     docs_url="/docs" if settings.docs_enabled else None,
-    redoc_url=None, openapi_url="/openapi.json" if settings.docs_enabled else None,
+    redoc_url=None,
+    openapi_url="/openapi.json" if settings.docs_enabled else None,
 )
 
-if settings.cors_origins_list:
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=settings.cors_origins_list,
-        # The frontend uses bearer tokens in the Authorization header, not cookies.
-        allow_credentials=False,
-        allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
-        allow_headers=["Authorization", "Content-Type"],
-    )
+# Explicit list of allowed origins for development & production
+origins = [
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+]
+
+# Configure CORS to permit local frontend dev servers to connect smoothly
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=settings.cors_origins_list if settings.cors_origins_list else origins,
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 @app.middleware("http")
@@ -69,6 +79,12 @@ async def security_middleware(request: Request, call_next):
 async def redis_down(_: Request, exc: RedisError):
     logger.error("Redis failure: %s", type(exc).__name__)
     return JSONResponse({"detail": "Auth/cache backend unavailable, retry shortly"}, status_code=503)
+
+
+@app.get("/", include_in_schema=False)
+async def root_redirect():
+    """Redirects the root URL path to interactive API documentation."""
+    return RedirectResponse(url="/docs")
 
 
 @app.get("/health", tags=["meta"])
