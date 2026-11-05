@@ -58,7 +58,7 @@ async function request(path, { method = 'GET', token, body, headers = {}, respon
     response = await fetch(`${getApiBase()}${path}`, {
       method,
       headers: requestHeaders,
-      body: body instanceof FormData ? body : body === undefined ? undefined : JSON.stringify(body),
+      body: body instanceof FormData || typeof body === 'string' ? body : body === undefined ? undefined : JSON.stringify(body),
     })
   } catch (error) {
     throw new ApiError(`Cannot reach API at ${getApiBase()}. Check that the FastAPI server is running and CORS allows this origin.`, 0, error)
@@ -129,7 +129,17 @@ export const api = {
     signup: (data) => request('/api/v1/auth/signup', { method: 'POST', body: data }),
     verifyOtp: (data) => request('/api/v1/auth/verify-otp', { method: 'POST', body: data }),
     login: async (data) => {
-      const res = await request('/api/v1/auth/login', { method: 'POST', body: data, retry: false })
+      // Send JSON payload with email and password matching Pydantic schema
+      const payload = typeof data === 'object' && !(data instanceof FormData)
+        ? { email: data.email || data.username, password: data.password }
+        : data
+
+      const res = await request('/api/v1/auth/login', { 
+        method: 'POST', 
+        body: payload, 
+        retry: false 
+      })
+      
       if (res?.access_token) setStoredToken('portline-access-token', res.access_token)
       if (res?.refresh_token) setStoredToken('portline-refresh-token', res.refresh_token)
       return res
@@ -153,7 +163,6 @@ export const api = {
     list: (status = '') => request(`/api/v1/shipments?${status ? `status=${encodeURIComponent(status)}&` : ''}skip=0&limit=50`),
     get: (id) => request(`/api/v1/shipments/${encodeURIComponent(id)}`),
     create: (data) => {
-      // Supports passing either 'supplier' or 'supplier_name'
       const payload = typeof data === 'string' ? { supplier: data } : { supplier: data.supplier || data.supplier_name, ...data }
       return request('/api/v1/shipments', { method: 'POST', body: payload })
     },
@@ -169,7 +178,6 @@ export const api = {
     documentFile: (id) => request(`/api/v1/documents/${encodeURIComponent(id)}/file`, { responseType: 'blob' }),
     review: (id) => request(`/api/v1/shipments/${encodeURIComponent(id)}/review`),
     updateField: (shipmentId, fieldId, value) => {
-      // Accepts string value or explicit object payload and ensures human verification flag is set
       const payload = typeof value === 'object' && value !== null
         ? { value: value.value || value.field_value, is_human_verified: value.is_human_verified ?? true }
         : { value: String(value), is_human_verified: true }
