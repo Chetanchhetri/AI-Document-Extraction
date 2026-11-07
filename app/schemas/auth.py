@@ -1,6 +1,7 @@
 import re
 from typing import Annotated, Optional
 
+from app.schemas.base import BaseSchema
 from pydantic import BaseModel, ConfigDict, EmailStr, StringConstraints, field_validator
 
 OTP = Annotated[str, StringConstraints(pattern=r"^\d{6}$")]
@@ -20,26 +21,36 @@ class _Strict(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
-class SignupRequest(_Strict):
-    email: EmailStr
+class SignupRequest(BaseSchema):
+    email: str
     password: str
-    full_name: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=200)]
-
-    _pw = field_validator("password")(_check_password)
+    full_name: str
 
 
 class VerifyOtpRequest(_Strict):
     email: EmailStr
     otp: OTP
 
+class OTPVerifyRequest(BaseSchema):
+    email: str
+    otp: str
+
+
+class RefreshTokenRequest(BaseSchema):
+    refresh_token: str
 
 class ResendOtpRequest(_Strict):
     email: EmailStr
 
 
-class LoginRequest(_Strict):
-    email: EmailStr
-    password: Annotated[str, StringConstraints(min_length=1, max_length=128)]
+class LoginRequest(BaseSchema):
+    email: Optional[str] = None
+    username: Optional[str] = None
+    password: str
+
+    @property
+    def effective_email(self) -> str:
+        return self.email or self.username or ""
 
 
 class RefreshRequest(_Strict):

@@ -1,6 +1,7 @@
 from datetime import datetime
 from typing import Annotated, Optional
 
+from app.schemas.base import BaseSchema
 from pydantic import BaseModel, ConfigDict, EmailStr, StringConstraints, field_validator
 
 from app.models.enums import Role
@@ -19,15 +20,13 @@ class UserRead(BaseModel):
     is_verified: bool
     created_at: datetime
 
-
-class UserCreate(_Strict):
-    """Admin-only: creates (invites) a staff account. The user must still verify the emailed OTP."""
-    email: EmailStr
-    full_name: FullName
-    role: Role = Role.executive
+class UserCreate(BaseSchema):
+    email: str
     password: str
-
-    _pw = field_validator("password")(_check_password)
+    full_name: str
+    role: Optional[str] = "executive"
+    is_verified: Optional[bool] = True
+    is_active: Optional[bool] = True
 
 
 class UserAdminUpdate(_Strict):
@@ -38,3 +37,9 @@ class UserAdminUpdate(_Strict):
 
 class UserSelfUpdate(_Strict):
     full_name: FullName
+
+class UserUpdate(BaseSchema):
+    full_name: Optional[str] = None
+    role: Optional[str] = None
+    is_active: Optional[bool] = None
+    is_verified: Optional[bool] = None

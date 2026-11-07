@@ -1,6 +1,7 @@
 from datetime import datetime
 from typing import Annotated, Any, Optional
 
+from app.schemas.base import BaseSchema
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 
 from app.models.enums import CheckStatus, DocType, ExtractionStatus, ShipmentStatus
@@ -8,9 +9,14 @@ from app.schemas.auth import _Strict
 
 Reason = Annotated[str, StringConstraints(strip_whitespace=True, min_length=10, max_length=1000)]
 
+class ShipmentCreate(BaseSchema):
+    supplier: Optional[str] = None
+    supplier_name: Optional[str] = None
+    notes: Optional[str] = None
 
-class ShipmentCreate(_Strict):
-    supplier_name: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=200)]
+    @property
+    def effective_supplier(self) -> str:
+        return self.supplier or self.supplier_name or "Unknown Supplier"
 
 
 class ShipmentRead(BaseModel):
@@ -49,9 +55,14 @@ class FieldRead(BaseModel):
     bounding_box: Optional[dict[str, Any]] = None
 
 
-class FieldUpdate(_Strict):
-    value: Optional[Annotated[str, StringConstraints(max_length=2000)]] = None
-    is_human_verified: bool = True
+class FieldUpdate(BaseSchema):
+    value: Optional[str] = None
+    field_value: Optional[str] = None
+    is_human_verified: Optional[bool] = True
+
+    @property
+    def effective_value(self) -> Optional[str]:
+        return self.value if self.value is not None else self.field_value
 
 
 class CrossCheckRead(BaseModel):
@@ -66,9 +77,9 @@ class CrossCheckRead(BaseModel):
     override_reason: Optional[str] = None
 
 
-class OverrideRequest(_Strict):
-    override_reason: Reason
-    check_id: Optional[int] = Field(default=None, description="Only needed for the body-based route")
+class OverrideRequest(BaseSchema):
+    check_id: Optional[int] = None
+    override_reason: str
 
 
 class LineItemRead(BaseModel):
