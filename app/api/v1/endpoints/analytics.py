@@ -1,14 +1,27 @@
 from collections import defaultdict
-
-from fastapi import APIRouter, Depends
+from datetime import datetime
+from typing import List, Optional
+from fastapi import APIRouter, Depends, Query
 from sqlmodel import select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.api.deps import require_manager
 from app.core.database import get_session
 from app.models import AuditLog, CheckStatus, CrossCheck, ExtractedField, Shipment, User
+from app.schemas.base import BaseSchema
 
 router = APIRouter(prefix="/analytics", tags=["analytics"])
+
+
+class AuditLogRead(BaseSchema):
+    id: int
+    shipment_id: Optional[int] = None
+    user_id: Optional[int] = None
+    action: str
+    field_name: Optional[str] = None
+    old_value: Optional[str] = None
+    new_value: Optional[str] = None
+    created_at: Optional[datetime] = None
 
 
 @router.get("/accuracy")
@@ -67,3 +80,16 @@ async def accuracy(_user: User = Depends(require_manager), session: AsyncSession
     return {"overall": {"total_fields": total, "verified_without_edits": clean,
                         "accuracy_rate_pct": round(100 * clean / total, 2) if total else None},
             "by_field": field_rows, "by_supplier": supplier_rows}
+
+
+@router.get("/audit-logs", response_model=List[AuditLogRead])
+async def get_audit_logs(
+    skip: int = Query(0, ge=0),
+    limit: int = Query(100, ge=1, le=500),
+    _user: User = Depends(require_manager),
+    session: AsyncSession = Depends(get_session),
+):
+    """Returns historical audit log entries for compliance oversight."""
+    statement = select(AuditLog).order_by(AuditLog.id.desc()).offset(skip).limit(limit)
+    result = await session.exec(statement)
+    return result.all()

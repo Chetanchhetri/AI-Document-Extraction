@@ -12,6 +12,7 @@ from app.api.deps import require_executive
 from app.core.config import settings
 from app.core.database import get_session
 from app.models import (
+    AuditLog,
     DocType,
     Document,
     ExtractedField,
@@ -70,9 +71,29 @@ async def upload_document(
         )
 
     if same_type:
+        # 1. Nullify foreign key references in audit_logs to prevent FK constraint violations
+        old_field_ids = (
+            await session.exec(
+                select(ExtractedField.id).where(ExtractedField.document_id == same_type.id)
+            )
+        ).all()
+        if old_field_ids:
+            logs_to_nullify = (
+                await session.exec(
+                    select(AuditLog).where(AuditLog.extracted_field_id.in_(old_field_ids))
+                )
+            ).all()
+            for log in logs_to_nullify:
+                log.extracted_field_id = None
+                session.add(log)
+            await session.flush()
+
+        # 2. Delete extracted fields and line items linked to old document
         await session.exec(delete(ExtractedField).where(ExtractedField.document_id == same_type.id))
         if doc_type == DocType.invoice:
             await session.exec(delete(ShipmentLineItem).where(ShipmentLineItem.shipment_id == shipment_id))
+        
+        # 3. Remove physical file and delete old document database record
         Path(same_type.file_path).unlink(missing_ok=True)
         await session.delete(same_type)
         await session.flush()

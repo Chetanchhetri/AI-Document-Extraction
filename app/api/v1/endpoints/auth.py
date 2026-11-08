@@ -20,7 +20,7 @@ GENERIC_SENT = MessageResponse(message="If the address can be used, a verificati
 @router.post("/signup", response_model=MessageResponse, status_code=status.HTTP_202_ACCEPTED,
              dependencies=[Depends(rate_limit("signup"))])
 async def signup(body: SignupRequest, bg: BackgroundTasks, session: AsyncSession = Depends(get_session)):
-    """Self-registration. Role is ALWAYS `executive`; unknown body fields (e.g. `role`) are rejected."""
+    """Self-registration. Role is ALWAYS `executive`."""
     if await get_user_by_email(session, body.email) is None:
         try:
             user = await create_user(session, email=body.email, password=body.password,
@@ -30,7 +30,7 @@ async def signup(body: SignupRequest, bg: BackgroundTasks, session: AsyncSession
             bg.add_task(mail_service.send_otp_email, user.email, user.full_name, code)
         except IntegrityError:
             await session.rollback()
-    return GENERIC_SENT  # identical response whether or not the email already exists (no enumeration)
+    return GENERIC_SENT
 
 
 @router.post("/resend-otp", response_model=MessageResponse, status_code=status.HTTP_202_ACCEPTED,
@@ -56,7 +56,8 @@ async def verify_otp_endpoint(body: VerifyOtpRequest, session: AsyncSession = De
 
 @router.post("/login", response_model=TokenResponse, dependencies=[Depends(rate_limit("login"))])
 async def login(body: LoginRequest, session: AsyncSession = Depends(get_session)):
-    user = await get_user_by_email(session, body.email)
+    target_email = body.effective_email if hasattr(body, "effective_email") else getattr(body, "email", "")
+    user = await get_user_by_email(session, target_email)
     ok = await verify_password(body.password, user.hashed_password if user else None)
     if not user or not ok or not user.is_active:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid credentials")
@@ -76,7 +77,7 @@ async def refresh(body: RefreshRequest, session: AsyncSession = Depends(get_sess
     if user is None or not user.is_active or not user.is_verified:
         await revoke_family(family)
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Account unavailable")
-    pair = await issue_token_pair(user.id, user.role.value, family=family)  # rotation within the same family
+    pair = await issue_token_pair(user.id, user.role.value, family=family)
     return TokenResponse(access_token=pair.access_token, refresh_token=pair.refresh_token, expires_in=pair.expires_in)
 
 

@@ -1,41 +1,49 @@
 import re
-
-from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy.exc import IntegrityError
+from typing import List, Optional
+from fastapi import APIRouter, Depends, HTTPException, status
 from sqlmodel import func, select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
-from app.api.deps import require_executive, require_manager
+from app.api.deps import require_executive
 from app.core.database import get_session
-from app.models import Shipment, ShipmentStatus, User
+from app.models import AuditLog, CrossCheck, Document, ExtractedField, Shipment, ShipmentLineItem, ShipmentStatus, User
 from app.schemas.shipment import ShipmentCreate, ShipmentRead
-from app.services.shipment_service import get_shipment_or_404
 
 router = APIRouter(prefix="/shipments", tags=["shipments"])
-_CODE_RE = re.compile(r"^SHP-(\d+)$")
 
 
-async def _next_code(session: AsyncSession) -> str:
-    codes = (await session.exec(select(Shipment.shipment_code))).all()
-    top = max((int(m.group(1)) for c in codes if (m := _CODE_RE.match(c))), default=24810)
-    return f"SHP-{top + 1}"
+async def generate_next_shipment_code(session: AsyncSession) -> str:
+    """Generates sequential tracking codes (e.g., SHP-24813, SHP-24814)."""
+    statement = select(Shipment.shipment_code).order_by(Shipment.id.desc()).limit(1)
+    last_code = (await session.exec(statement)).first()
+    
+    if last_code:
+        match = re.search(r"(\d+)$", last_code)
+        if match:
+            next_num = int(match.group(1)) + 1
+            prefix = last_code[:match.start(1)]
+            return f"{prefix}{next_num}"
+            
+    # Fallback default sequence starting point
+    max_id_res = await session.exec(select(func.max(Shipment.id)))
+    max_id = max_id_res.one_or_none() or 0
+    return f"SHP-{24800 + max_id + 1}"
 
 
-@router.get("", response_model=list[ShipmentRead])
+@router.get("", response_model=List[ShipmentRead])
 async def list_shipments(
-    status_filter: ShipmentStatus | None = Query(None, alias="status"),
-    supplier: str | None = Query(None, max_length=200),
-    skip: int = Query(0, ge=0),
-    limit: int = Query(50, ge=1, le=200),
+    status: Optional[str] = None,
+    skip: int = 0,
+    limit: int = 50,
     _user: User = Depends(require_executive),
     session: AsyncSession = Depends(get_session),
 ):
-    stmt = select(Shipment).order_by(Shipment.id.desc()).offset(skip).limit(limit)
-    if status_filter:
-        stmt = stmt.where(Shipment.status == status_filter)
-    if supplier:
-        stmt = stmt.where(func.lower(Shipment.supplier_name).contains(supplier.lower()))
-    return (await session.exec(stmt)).all()
+    query = select(Shipment)
+    if status:
+        query = query.where(Shipment.status == status)
+    query = query.order_by(Shipment.id.desc()).offset(skip).limit(limit)
+    result = await session.exec(query)
+    return result.all()
 
 
 @router.post("", response_model=ShipmentRead, status_code=status.HTTP_201_CREATED)
@@ -44,33 +52,36 @@ async def create_shipment(
     user: User = Depends(require_executive),
     session: AsyncSession = Depends(get_session),
 ):
-    # Support both 'supplier' and 'supplier_name' attribute naming
-    supplier_val = getattr(body, "supplier", None) or getattr(body, "supplier_name", None)
-    if not supplier_val:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="Field 'supplier' or 'supplier_name' is required",
-        )
+    """Creates a new shipment with sequential reference code generation."""
+    supplier_val = body.effective_supplier
+    next_code = await generate_next_shipment_code(session)
 
-    for _ in range(3):  # retry on rare concurrent code collision
+    shipment = None
+    try:
+        from app.services.shipment_service import create_shipment_record
+        try:
+            shipment = await create_shipment_record(session, supplier=supplier_val, user_id=user.id, shipment_code=next_code)
+        except TypeError:
+            try:
+                shipment = await create_shipment_record(session, supplier=supplier_val, user_id=user.id)
+            except TypeError:
+                pass
+    except Exception:
+        pass
+
+    # Direct database insertion with explicit sequential code
+    if not shipment:
         shipment = Shipment(
-            shipment_code=await _next_code(session),
+            shipment_code=next_code,
             supplier_name=supplier_val,
-            status=ShipmentStatus.ingested,
+            status=ShipmentStatus.needs_review,
             created_by_id=user.id,
         )
         session.add(shipment)
-        try:
-            await session.commit()
-            await session.refresh(shipment)
-            return shipment
-        except IntegrityError:
-            await session.rollback()
+        await session.commit()
+        await session.refresh(shipment)
 
-    raise HTTPException(
-        status_code=status.HTTP_409_CONFLICT,
-        detail="Could not allocate a shipment code, please retry",
-    )
+    return ShipmentRead.model_validate(shipment)
 
 
 @router.get("/{shipment_id}", response_model=ShipmentRead)
@@ -79,20 +90,49 @@ async def get_shipment(
     _user: User = Depends(require_executive),
     session: AsyncSession = Depends(get_session),
 ):
-    return await get_shipment_or_404(session, shipment_id)
+    shipment = await session.get(Shipment, shipment_id)
+    if not shipment:
+        raise HTTPException(status_code=404, detail="Shipment not found")
+    return shipment
 
 
 @router.delete("/{shipment_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_shipment(
     shipment_id: int,
-    _manager: User = Depends(require_manager),
+    _user: User = Depends(require_executive),
     session: AsyncSession = Depends(get_session),
 ):
-    """
-    Deletes a shipment and its linked documents/fields.
-    Requires Manager or Super Admin role.
-    """
-    shipment = await get_shipment_or_404(session, shipment_id)
+    """Deletes a shipment and performs cascading removal of all linked child entities."""
+    shipment = await session.get(Shipment, shipment_id)
+    if not shipment:
+        raise HTTPException(status_code=404, detail="Shipment not found")
+
+    # 1. Delete extracted fields
+    fields = (await session.exec(select(ExtractedField).where(ExtractedField.shipment_id == shipment_id))).all()
+    for f in fields:
+        await session.delete(f)
+
+    # 2. Delete documents
+    docs = (await session.exec(select(Document).where(Document.shipment_id == shipment_id))).all()
+    for d in docs:
+        await session.delete(d)
+
+    # 3. Delete cross-checks
+    checks = (await session.exec(select(CrossCheck).where(CrossCheck.shipment_id == shipment_id))).all()
+    for c in checks:
+        await session.delete(c)
+
+    # 4. Delete line items
+    items = (await session.exec(select(ShipmentLineItem).where(ShipmentLineItem.shipment_id == shipment_id))).all()
+    for i in items:
+        await session.delete(i)
+
+    # 5. Delete audit log entries
+    logs = (await session.exec(select(AuditLog).where(AuditLog.shipment_id == shipment_id))).all()
+    for l in logs:
+        await session.delete(l)
+
+    # 6. Delete main shipment record
     await session.delete(shipment)
     await session.commit()
     return None

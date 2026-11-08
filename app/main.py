@@ -42,17 +42,26 @@ app = FastAPI(
     openapi_url="/openapi.json" if settings.docs_enabled else None,
 )
 
+# Unconditional CORS configuration for local development and browser clients
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=["*"],
+    expose_headers=["Content-Disposition", "Authorization"],
+)
+
 
 @app.middleware("http")
 async def security_middleware(request: Request, call_next):
-    # Skip payload checks for CORS preflight (OPTIONS)
     if request.method == "OPTIONS":
         return await call_next(request)
 
     declared = request.headers.get("content-length")
     if declared and declared.isdigit() and int(declared) > settings.MAX_UPLOAD_BYTES + 2 * 1024 * 1024:
         return JSONResponse({"detail": "Request body too large"}, status_code=413)
-    
+
     response = await call_next(request)
     response.headers.setdefault("X-Content-Type-Options", "nosniff")
     response.headers.setdefault("X-Frame-Options", "DENY")
@@ -63,31 +72,40 @@ async def security_middleware(request: Request, call_next):
     return response
 
 
-# Add CORSMiddleware LAST so it wraps security_middleware and processes OPTIONS preflights first
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=False,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+@app.exception_handler(Exception)
+async def global_exception_handler(_: Request, exc: Exception):
+    """Attaches CORS headers explicitly to 500 server error responses."""
+    logger.error("Unhandled internal server exception: %s", str(exc), exc_info=True)
+    return JSONResponse(
+        status_code=500,
+        content={"detail": f"Internal server error: {str(exc)}"},
+        headers={
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Headers": "*",
+            "Access-Control-Allow-Methods": "*",
+        },
+    )
 
 
 @app.exception_handler(RedisError)
 async def redis_down(_: Request, exc: RedisError):
     logger.error("Redis failure: %s", type(exc).__name__)
-    return JSONResponse({"detail": "Auth/cache backend unavailable, retry shortly"}, status_code=503)
+    return JSONResponse(
+        {"detail": "Auth/cache backend unavailable, retry shortly"},
+        status_code=503,
+        headers={"Access-Control-Allow-Origin": "*"},
+    )
 
 
 @app.get("/", include_in_schema=False)
 async def root_redirect():
-    """Redirects root URL requests to interactive Swagger documentation."""
+    """Redirects root path requests to Swagger interactive API documentation."""
     return RedirectResponse(url="/docs")
 
 
 @app.get("/health", tags=["meta"])
 async def health():
-    """Liveness probe returning DB, Redis, and AI Provider status."""
+    """Liveness probe for system dependencies."""
     from sqlalchemy import text
 
     async with engine.connect() as conn:

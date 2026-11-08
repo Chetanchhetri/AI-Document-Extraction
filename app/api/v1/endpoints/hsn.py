@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from sqlmodel import select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
@@ -15,8 +15,12 @@ router = APIRouter(prefix="/hsn", tags=["hsn"])
 @router.post("/suggest", response_model=list[HSNSuggestion])
 async def suggest_hsn(body: HSNSuggestRequest, _user: User = Depends(require_executive),
                       session: AsyncSession = Depends(get_session)):
-    """Semantic HSN suggestions from line items of approved/exported (i.e. human-verified) shipments."""
-    query = await embed_one(body.description)
+    """Semantic HSN suggestions from line items of approved/exported shipments."""
+    search_text = body.effective_description
+    if not search_text or len(search_text.strip()) < 2:
+        raise HTTPException(status_code=422, detail="Valid product description required for HSN lookup")
+
+    query = await embed_one(search_text)
     rows = (await session.exec(
         select(ShipmentLineItem, Shipment.shipment_code)
         .join(Shipment, Shipment.id == ShipmentLineItem.shipment_id)
@@ -26,7 +30,7 @@ async def suggest_hsn(body: HSNSuggestRequest, _user: User = Depends(require_exe
     best: dict[str, dict] = {}
     for item, code in rows:
         emb = item.embedding or {}
-        if emb.get("model") != model_id():  # vectors from another model are not comparable
+        if emb.get("model") != model_id():
             continue
         score = cosine(query["vector"], emb["vector"])
         if score < min_score:
