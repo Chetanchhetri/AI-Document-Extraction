@@ -24,7 +24,6 @@ async def generate_next_shipment_code(session: AsyncSession) -> str:
             prefix = last_code[:match.start(1)]
             return f"{prefix}{next_num}"
             
-    # Fallback default sequence starting point
     max_id_res = await session.exec(select(func.max(Shipment.id)))
     max_id = max_id_res.one_or_none() or 0
     return f"SHP-{24800 + max_id + 1}"
@@ -69,7 +68,6 @@ async def create_shipment(
     except Exception:
         pass
 
-    # Direct database insertion with explicit sequential code
     if not shipment:
         shipment = Shipment(
             shipment_code=next_code,
@@ -102,37 +100,50 @@ async def delete_shipment(
     _user: User = Depends(require_executive),
     session: AsyncSession = Depends(get_session),
 ):
-    """Deletes a shipment and performs cascading removal of all linked child entities."""
+    """Deletes a shipment and performs cascading removal of all linked child entities without FK conflicts."""
     shipment = await session.get(Shipment, shipment_id)
     if not shipment:
         raise HTTPException(status_code=404, detail="Shipment not found")
 
-    # 1. Delete extracted fields
+    # 1. Nullify foreign keys on audit_logs referencing extracted fields of this shipment
+    field_ids = (await session.exec(
+        select(ExtractedField.id).where(ExtractedField.shipment_id == shipment_id)
+    )).all()
+    if field_ids:
+        logs_to_nullify = (await session.exec(
+            select(AuditLog).where(AuditLog.extracted_field_id.in_(field_ids))
+        )).all()
+        for log in logs_to_nullify:
+            log.extracted_field_id = None
+            session.add(log)
+
+    # 2. Delete audit_logs linked to this shipment and flush changes before deleting extracted_fields
+    logs = (await session.exec(select(AuditLog).where(AuditLog.shipment_id == shipment_id))).all()
+    for l in logs:
+        await session.delete(l)
+    await session.flush()
+
+    # 3. Delete extracted fields
     fields = (await session.exec(select(ExtractedField).where(ExtractedField.shipment_id == shipment_id))).all()
     for f in fields:
         await session.delete(f)
 
-    # 2. Delete documents
+    # 4. Delete documents
     docs = (await session.exec(select(Document).where(Document.shipment_id == shipment_id))).all()
     for d in docs:
         await session.delete(d)
 
-    # 3. Delete cross-checks
+    # 5. Delete cross-checks
     checks = (await session.exec(select(CrossCheck).where(CrossCheck.shipment_id == shipment_id))).all()
     for c in checks:
         await session.delete(c)
 
-    # 4. Delete line items
+    # 6. Delete line items
     items = (await session.exec(select(ShipmentLineItem).where(ShipmentLineItem.shipment_id == shipment_id))).all()
     for i in items:
         await session.delete(i)
 
-    # 5. Delete audit log entries
-    logs = (await session.exec(select(AuditLog).where(AuditLog.shipment_id == shipment_id))).all()
-    for l in logs:
-        await session.delete(l)
-
-    # 6. Delete main shipment record
+    # 7. Delete main shipment record
     await session.delete(shipment)
     await session.commit()
     return None

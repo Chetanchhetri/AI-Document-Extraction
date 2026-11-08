@@ -11,7 +11,6 @@ FastAPI (async) + SQLModel + PostgreSQL + Redis. Designed to run entirely on **f
 ## 1. Local setup (Docker)
 
 ```bash
-cp .env.example .env            # then edit secrets (see section 2)
 docker compose up --build       # Postgres 16 + Redis 7 + API on http://localhost:8000
 ```
 The API container runs `alembic upgrade head`, seeds the super admin, and (because `SEED_DEMO_DATA=true` in `.env.example`) seeds the demo shipments. Swagger UI: http://localhost:8000/docs (development only). Health: `GET /health`.

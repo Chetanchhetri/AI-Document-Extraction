@@ -43,6 +43,37 @@ def _storage_path(shipment_id: int, extension: str) -> Path:
     return target
 
 
+async def _delete_document_and_dependencies(session: AsyncSession, doc: Document) -> None:
+    """Helper to safely remove a document along with all child records to prevent FK constraint violations."""
+    # 1. Nullify foreign key references in audit_logs to prevent FK constraint violations
+    old_field_ids = (
+        await session.exec(
+            select(ExtractedField.id).where(ExtractedField.document_id == doc.id)
+        )
+    ).all()
+    if old_field_ids:
+        logs_to_nullify = (
+            await session.exec(
+                select(AuditLog).where(AuditLog.extracted_field_id.in_(old_field_ids))
+            )
+        ).all()
+        for log in logs_to_nullify:
+            log.extracted_field_id = None
+            session.add(log)
+        await session.flush()
+
+    # 2. Delete extracted fields and line items linked to document
+    await session.exec(delete(ExtractedField).where(ExtractedField.document_id == doc.id))
+    if doc.doc_type == DocType.invoice:
+        await session.exec(delete(ShipmentLineItem).where(ShipmentLineItem.shipment_id == doc.shipment_id))
+
+    # 3. Remove physical file and delete document database record
+    if doc.file_path:
+        Path(doc.file_path).unlink(missing_ok=True)
+    await session.delete(doc)
+    await session.flush()
+
+
 @router.post("", response_model=DocumentRead, status_code=status.HTTP_202_ACCEPTED)
 async def upload_document(
     shipment_id: int,
@@ -71,32 +102,7 @@ async def upload_document(
         )
 
     if same_type:
-        # 1. Nullify foreign key references in audit_logs to prevent FK constraint violations
-        old_field_ids = (
-            await session.exec(
-                select(ExtractedField.id).where(ExtractedField.document_id == same_type.id)
-            )
-        ).all()
-        if old_field_ids:
-            logs_to_nullify = (
-                await session.exec(
-                    select(AuditLog).where(AuditLog.extracted_field_id.in_(old_field_ids))
-                )
-            ).all()
-            for log in logs_to_nullify:
-                log.extracted_field_id = None
-                session.add(log)
-            await session.flush()
-
-        # 2. Delete extracted fields and line items linked to old document
-        await session.exec(delete(ExtractedField).where(ExtractedField.document_id == same_type.id))
-        if doc_type == DocType.invoice:
-            await session.exec(delete(ShipmentLineItem).where(ShipmentLineItem.shipment_id == shipment_id))
-        
-        # 3. Remove physical file and delete old document database record
-        Path(same_type.file_path).unlink(missing_ok=True)
-        await session.delete(same_type)
-        await session.flush()
+        await _delete_document_and_dependencies(session, same_type)
 
     path = _storage_path(shipment_id, validated.extension)
     await run_in_threadpool(path.write_bytes, validated.data)
@@ -115,6 +121,7 @@ async def upload_document(
     shipment.status = ShipmentStatus.processing
     session.add(shipment)
     await session.commit()
+    await session.refresh(doc)  # Populates doc.id before returning response
     bg.add_task(process_document, doc.id)
     return doc
 
@@ -154,9 +161,28 @@ async def download_shipment_document(
     )
 
 
+@router.delete("/{document_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_shipment_document(
+    shipment_id: int,
+    document_id: int,
+    _user: User = Depends(require_executive),
+    session: AsyncSession = Depends(get_session),
+):
+    """Deletes a document within a shipment scope."""
+    shipment = await get_shipment_or_404(session, shipment_id)
+    if shipment.status == ShipmentStatus.exported:
+        raise HTTPException(status_code=409, detail="Shipment already exported; documents are locked")
+
+    doc = await session.get(Document, document_id)
+    if doc is None or doc.shipment_id != shipment_id:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    await _delete_document_and_dependencies(session, doc)
+    await session.commit()
+
+
 # ------------------------------------------------------------------
-# DIRECT DOCUMENT FILE ACCESS ROUTE (GET /api/v1/documents/{document_id}/file)
-# Matches Postman request: GET {{baseUrl}}/api/v1/documents/{{documentId}}/file
+# DIRECT DOCUMENT FILE ACCESS & DELETION ROUTES
 # ------------------------------------------------------------------
 @direct_router.get("/{document_id}/file")
 async def download_document_direct(
@@ -180,3 +206,22 @@ async def download_document_direct(
             "Content-Security-Policy": "default-src 'none'; sandbox",
         },
     )
+
+
+@direct_router.delete("/{document_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_document_direct(
+    document_id: int,
+    _user: User = Depends(require_executive),
+    session: AsyncSession = Depends(get_session),
+):
+    """Deletes a document directly by document_id."""
+    doc = await session.get(Document, document_id)
+    if doc is None:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    shipment = await get_shipment_or_404(session, doc.shipment_id)
+    if shipment.status == ShipmentStatus.exported:
+        raise HTTPException(status_code=409, detail="Shipment already exported; documents are locked")
+
+    await _delete_document_and_dependencies(session, doc)
+    await session.commit()

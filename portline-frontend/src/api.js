@@ -104,6 +104,8 @@ export const api = {
   uploadDoc: (id, doc_type, f, replace = false) => { const fd = new FormData(); fd.append('doc_type', doc_type); fd.append('file', f); return j(`${V}/shipments/${id}/documents`, { method: 'POST', form: fd, query: replace ? { replace: 'true' } : undefined }); },
   docs: (id) => j(`${V}/shipments/${id}/documents`),
   docFile: (docId) => file(`${V}/documents/${docId}/file`),
+  deleteDoc: (shipmentId, docId) => j(`${V}/shipments/${shipmentId}/documents/${docId}`, { method: 'DELETE' }),
+  deleteDocDirect: (docId) => j(`${V}/documents/${docId}`, { method: 'DELETE' }),
   // 5. Review
   review: (id) => j(`${V}/shipments/${id}/review`),
   patchField: (sid, fid, value) => firstOk(`${V}/shipments/${sid}/fields/${fid}`, 'PATCH', [{ value, field_value: value, is_human_verified: true }, { value, is_human_verified: true }, { field_value: value, is_human_verified: true }]), // unchanged value = verify, changed = edit
