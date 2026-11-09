@@ -108,77 +108,72 @@ Portline IDP leverages **Vision AI** for document field extraction, vector embed
 ---
 
 ### Environment Setup
-# ---- Core ------------------------------------------------------------------------------
 
-ENVIRONMENT=development                 # development | production (production enforces strong secrets, hides /docs)
-ENABLE_DOCS=true                        # Swagger UI at /docs (ignored in production)
-CORS_ORIGINS=http://localhost:3000      # comma separated; empty = CORS disabled
+Create a `.env` file in the root directory with your environment configurations:
+
+```env
+# ---- Core ------------------------------------------------------------------------------
+ENVIRONMENT=development                 # development | production
+ENABLE_DOCS=true                        # Enable Swagger UI at /docs
+CORS_ORIGINS=http://localhost:3000,http://localhost:5173
 LOG_LEVEL=INFO
 
 # ---- Data stores -----------------------------------------------------------------------
-# docker-compose overrides these two; for local non-docker runs adjust to your instances.
-DATABASE_URL=postgresql+asyncpg://customs:customs@localhost:5432/customs_idp   # postgres:// and postgresql:// also accepted (Render)
-REDIS_URL=redis://localhost:6379/0      # memory:// = in-process fallback (dev/tests ONLY; refused in production)
-AUTO_CREATE_TABLES=false                # true = create_all() on boot (dev shortcut). Normal path: Alembic (run by start.sh)
+DATABASE_URL=postgresql+asyncpg://customs:customs@localhost:5432/customs_idp
+REDIS_URL=redis://localhost:6379/0
+AUTO_CREATE_TABLES=false                # Set to true to create tables automatically on boot
 
-# ---- Secrets (generate real ones!) ------------------------------------------------------
-# python -c "import secrets; print(secrets.token_urlsafe(48))"
+# ---- Secrets ---------------------------------------------------------------------------
 SECRET_KEY=change-me-change-me-change-me-change-me-0123456789
-# 32-byte key as 64 hex chars or base64; any other string >= 32 chars is HKDF-derived. NEVER change it once PII is stored.
-# python -c "import secrets; print(secrets.token_hex(32))"
 AES_ENCRYPTION_KEY=0000000000000000000000000000000000000000000000000000000000000000
 
-# ---- Bootstrap -------------------------------------------------------------------------
-SUPERADMIN_EMAIL=TEST@example.com
-SUPERADMIN_INIT_PASSWORD= TestPassword@123    
-SEED_DEMO_DATA=False                    
-SEED_DEMO_PASSWORD=Demo-Passw0rd-123    (verified)
+# ---- Bootstrap Admin & Seed ------------------------------------------------------------
+SUPERADMIN_EMAIL=admin@example.com
+SUPERADMIN_INIT_PASSWORD=TestPassword@123    
+SEED_DEMO_DATA=false                    
+SEED_DEMO_PASSWORD=Demo-Passw0rd-123
 
-# ---- Auth tuning (defaults match the spec) ----------------------------------------------
+# ---- Auth Tuning -----------------------------------------------------------------------
 ACCESS_TOKEN_MINUTES=15
 REFRESH_TOKEN_DAYS=7
 OTP_TTL_SECONDS=600
-AUTH_RATE_LIMIT_MAX=5                   # per IP per window on login / verify-otp / resend-otp (and signup)
+AUTH_RATE_LIMIT_MAX=5
 AUTH_RATE_LIMIT_WINDOW_SECONDS=900
 
-# ---- SMTP (OTP e-mail) ------------------------------------------------------------------
-# Empty SMTP_HOST in development => the OTP is written to the API log instead of being e-mailed.
-# Render FREE blocks outbound ports 25/465/587 -> use a provider with port 2525 (Brevo, Mailgun, SendGrid...).
+# ---- SMTP (OTP Email) ------------------------------------------------------------------
 SMTP_HOST=smtp.gmail.com
 SMTP_PORT=587
-SMTP_USER= Email
-SMTP_PASSWORD= SMPT PASSWORD
-SMTP_FROM= Email
+SMTP_USER=your-email@gmail.com
+SMTP_PASSWORD=your-app-password
+SMTP_FROM=your-email@gmail.com
 SMTP_STARTTLS=true
 
-EMAIL_SENDER= Email
-EMAIL_PASSWORD= SMPT PASSWORD
+EMAIL_SENDER=your-email@gmail.com
+EMAIL_PASSWORD=your-app-password
 
 # ---- Uploads ---------------------------------------------------------------------------
-UPLOAD_DIR=./storage                    # ephemeral on Render free (no disk)
-MAX_UPLOAD_BYTES=26214400               # 25 MB
+UPLOAD_DIR=./storage
+MAX_UPLOAD_BYTES=26214400               # 25 MB max size
 MAX_PDF_PAGES=50
-AI_MAX_PAGES=3                          # pages rendered and sent to the vision model per document
-AI_RENDER_DPI=110                       # bounding boxes are reported in pixels at this DPI
+AI_MAX_PAGES=3
+AI_RENDER_DPI=110
 
-# ---- AI --------------------------------------------------------------------------------
-# mock   : offline canned extraction mirroring SHP-24811 (demo / CI). Real documents are NOT read.
-# gemini : Gemma via the Google AI Studio (Gemini) API  -> free tier, but see data-use warning in DEPLOYMENT.md
-# ollama : fully local Gemma 3 vision + EmbeddingGemma -> private, needs a machine with a GPU/16GB RAM
+# ---- AI Engine Options -----------------------------------------------------------------
+# Provider Options: mock | gemini | ollama
 AI_PROVIDER=mock
 AI_EXTRA_HEADERS='{"X-Zero-Data-Retention": "true", "Cache-Control": "no-store"}'
-GEMINI_API_KEY=
-GEMINI_VISION_MODEL= gemma-3-27b-it
-GEMINI_EMBED_MODEL= gemini-embedding-001
-OLLAMA_BASE_URL= http://localhost:11434
-OLLAMA_VISION_MODEL= gemma3:4b
-OLLAMA_EMBED_MODEL= embeddinggemma
-LOW_CONFIDENCE_THRESHOLD= 0.85
-HSN_MIN_SCORE= 0.35
+GEMINI_API_KEY=your-gemini-api-key
+GEMINI_VISION_MODEL=gemma-3-27b-it
+GEMINI_EMBED_MODEL=gemini-embedding-001
+OLLAMA_BASE_URL=http://localhost:11434
+OLLAMA_VISION_MODEL=gemma3:4b
+OLLAMA_EMBED_MODEL=embeddinggemma
+LOW_CONFIDENCE_THRESHOLD=0.85
+HSN_MIN_SCORE=0.35
 
-   # Hugging Face Authentication Token
-
-HF_TOKEN = HF_TOKEN_FROM_HUGGING_FACE
+# ---- Hugging Face Authentication -------------------------------------------------------
+HF_TOKEN=hf_XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+```
 
 ---
 
