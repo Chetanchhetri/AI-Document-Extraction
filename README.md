@@ -108,30 +108,77 @@ Portline IDP leverages **Vision AI** for document field extraction, vector embed
 ---
 
 ### Environment Setup
+# ---- Core ------------------------------------------------------------------------------
 
-1. **Clone the Repository:**
-   ```powershell
-   git clone <repository-url>
-   cd customs_idp_backend
-   ```
+ENVIRONMENT=development                 # development | production (production enforces strong secrets, hides /docs)
+ENABLE_DOCS=true                        # Swagger UI at /docs (ignored in production)
+CORS_ORIGINS=http://localhost:3000      # comma separated; empty = CORS disabled
+LOG_LEVEL=INFO
 
-2. **Configure Environment File (`.env`):**
-   Create a `.env` file in the project root:
-   ```env
-   PROJECT_NAME="Portline IDP Engine"
-   API_V1_PREFIX="/api/v1"
-   SECRET_KEY="your-super-secret-jwt-key"
-   
-   # Database & Redis Credentials
-   POSTGRES_USER=customs
-   POSTGRES_PASSWORD=customs
-   POSTGRES_DB=customs_idp
-   DATABASE_URL="postgresql+asyncpg://customs:customs@db:5432/customs_idp"
-   REDIS_URL="redis://redis:6379/0"
-   
+# ---- Data stores -----------------------------------------------------------------------
+# docker-compose overrides these two; for local non-docker runs adjust to your instances.
+DATABASE_URL=postgresql+asyncpg://customs:customs@localhost:5432/customs_idp   # postgres:// and postgresql:// also accepted (Render)
+REDIS_URL=redis://localhost:6379/0      # memory:// = in-process fallback (dev/tests ONLY; refused in production)
+AUTO_CREATE_TABLES=false                # true = create_all() on boot (dev shortcut). Normal path: Alembic (run by start.sh)
+
+# ---- Secrets (generate real ones!) ------------------------------------------------------
+# python -c "import secrets; print(secrets.token_urlsafe(48))"
+SECRET_KEY=change-me-change-me-change-me-change-me-0123456789
+# 32-byte key as 64 hex chars or base64; any other string >= 32 chars is HKDF-derived. NEVER change it once PII is stored.
+# python -c "import secrets; print(secrets.token_hex(32))"
+AES_ENCRYPTION_KEY=0000000000000000000000000000000000000000000000000000000000000000
+
+# ---- Bootstrap -------------------------------------------------------------------------
+SUPERADMIN_EMAIL=TEST@example.com
+SUPERADMIN_INIT_PASSWORD= TestPassword@123    
+SEED_DEMO_DATA=False                    
+SEED_DEMO_PASSWORD=Demo-Passw0rd-123    (verified)
+
+# ---- Auth tuning (defaults match the spec) ----------------------------------------------
+ACCESS_TOKEN_MINUTES=15
+REFRESH_TOKEN_DAYS=7
+OTP_TTL_SECONDS=600
+AUTH_RATE_LIMIT_MAX=5                   # per IP per window on login / verify-otp / resend-otp (and signup)
+AUTH_RATE_LIMIT_WINDOW_SECONDS=900
+
+# ---- SMTP (OTP e-mail) ------------------------------------------------------------------
+# Empty SMTP_HOST in development => the OTP is written to the API log instead of being e-mailed.
+# Render FREE blocks outbound ports 25/465/587 -> use a provider with port 2525 (Brevo, Mailgun, SendGrid...).
+SMTP_HOST=smtp.gmail.com
+SMTP_PORT=587
+SMTP_USER= Email
+SMTP_PASSWORD= SMPT PASSWORD
+SMTP_FROM= Email
+SMTP_STARTTLS=true
+
+EMAIL_SENDER= Email
+EMAIL_PASSWORD= SMPT PASSWORD
+
+# ---- Uploads ---------------------------------------------------------------------------
+UPLOAD_DIR=./storage                    # ephemeral on Render free (no disk)
+MAX_UPLOAD_BYTES=26214400               # 25 MB
+MAX_PDF_PAGES=50
+AI_MAX_PAGES=3                          # pages rendered and sent to the vision model per document
+AI_RENDER_DPI=110                       # bounding boxes are reported in pixels at this DPI
+
+# ---- AI --------------------------------------------------------------------------------
+# mock   : offline canned extraction mirroring SHP-24811 (demo / CI). Real documents are NOT read.
+# gemini : Gemma via the Google AI Studio (Gemini) API  -> free tier, but see data-use warning in DEPLOYMENT.md
+# ollama : fully local Gemma 3 vision + EmbeddingGemma -> private, needs a machine with a GPU/16GB RAM
+AI_PROVIDER=mock
+AI_EXTRA_HEADERS='{"X-Zero-Data-Retention": "true", "Cache-Control": "no-store"}'
+GEMINI_API_KEY=
+GEMINI_VISION_MODEL= gemma-3-27b-it
+GEMINI_EMBED_MODEL= gemini-embedding-001
+OLLAMA_BASE_URL= http://localhost:11434
+OLLAMA_VISION_MODEL= gemma3:4b
+OLLAMA_EMBED_MODEL= embeddinggemma
+LOW_CONFIDENCE_THRESHOLD= 0.85
+HSN_MIN_SCORE= 0.35
+
    # Hugging Face Authentication Token
-   HF_TOKEN=hf_XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
-   ```
+
+HF_TOKEN = HF_TOKEN_FROM_HUGGING_FACE
 
 ---
 
