@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { 
+  AlertCircle,
   Bot, 
   Boxes, 
   RefreshCw, 
@@ -19,7 +20,7 @@ const PROMPT_SUGGESTIONS = [
   "Summarize extracted fields and discrepancies"
 ];
 
-// Renders markdown **bold** as <b> HTML tags
+// Renders markdown **bold** as <b> HTML tags safely
 function FormattedText({ text }) {
   if (!text) return null;
   const lines = text.split('\n');
@@ -51,6 +52,7 @@ export default function NewSection() {
   const [loadingContext, setLoadingContext] = useState(false);
   
   const [query, setQuery] = useState('');
+  const [statusNotice, setStatusNotice] = useState('');
   const [messages, setMessages] = useState([
     {
       id: 'welcome',
@@ -93,12 +95,12 @@ export default function NewSection() {
     }
   }, [selectedId, loadShipmentData]);
 
-  // Auto-scroll chat
+  // Auto-scroll chat stream smooth alignment
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages, thinking]);
+  }, [messages, thinking, statusNotice]);
 
-  // Routes directly to local Gemma 2 (2B) Backend API
+  // Routes requests to local Gemma 2 (2B) Backend API
   const askLLM = async (userQuestion) => {
     if (!userQuestion.trim()) return;
 
@@ -106,12 +108,18 @@ export default function NewSection() {
     setMessages((prev) => [...prev, userMsg]);
     setQuery('');
     setThinking(true);
+    setStatusNotice('');
 
     try {
       const baseUrl = getBase() || 'http://localhost:8000';
+      const token = localStorage.getItem('access_token');
+
       const res = await fetch(`${baseUrl}/api/v1/copilot/chat`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {})
+        },
         body: JSON.stringify({
           query: userQuestion,
           shipment_code: shipmentContext?.shipment?.shipment_code,
@@ -126,11 +134,19 @@ export default function NewSection() {
       }
 
       const data = await res.json();
+      const replyText = data.reply || data.response || data.detail || 'No response generated.';
 
-      setMessages((prev) => [
-        ...prev,
-        { id: Date.now().toString(), role: 'assistant', text: data.reply }
-      ]);
+      // Intercept background loading notices to avoid message stacking overlaps
+      if (replyText.includes('currently loading') || replyText.includes('initializing in the background') || replyText.includes('downloading')) {
+        setStatusNotice(replyText);
+        toast(replyText, 'warn');
+      } else {
+        setStatusNotice('');
+        setMessages((prev) => [
+          ...prev,
+          { id: Date.now().toString(), role: 'assistant', text: replyText }
+        ]);
+      }
     } catch (err) {
       toast(`Gemma 2 API Error: ${err.message}`, 'err');
     } finally {
@@ -145,7 +161,7 @@ export default function NewSection() {
         sub="Ask context-aware questions about your customs documents, extraction confidence, and cross-checks."
       >
         <button className="ghost" onClick={() => loadShipmentData(selectedId)}>
-          <RefreshCw size={14} /> Refresh Context
+          <RefreshCw size={14} className={loadingContext ? "animate-spin" : ""} /> Refresh Context
         </button>
       </PageHead>
 
@@ -190,17 +206,19 @@ export default function NewSection() {
           display: 'flex', 
           flexDirection: 'column', 
           height: 'calc(100vh - 240px)', 
-          minHeight: '520px' 
+          minHeight: '520px',
+          overflow: 'hidden'
         }}
       >
         
-        {/* Messages Stream */}
+        {/* Messages Stream with Strict Layout Isolation */}
         <div 
           className="scroll" 
           style={{ 
             flex: 1, 
+            minHeight: 0,
             overflowY: 'auto', 
-            paddingRight: '4px',
+            paddingRight: '6px',
             marginBottom: '16px',
             display: 'flex',
             flexDirection: 'column',
@@ -210,30 +228,56 @@ export default function NewSection() {
           {messages.map((m) => (
             <div 
               key={m.id} 
-              className="row top gap-3"
               style={{
+                display: 'flex',
+                alignItems: 'flex-start',
+                gap: '12px',
                 padding: '12px 16px',
                 borderRadius: '8px',
                 backgroundColor: m.role === 'user' ? 'rgba(59, 130, 246, 0.08)' : 'rgba(255, 255, 255, 0.03)',
-                border: '1px solid ' + (m.role === 'user' ? 'rgba(59, 130, 246, 0.2)' : 'rgba(255, 255, 255, 0.06)')
+                border: '1px solid ' + (m.role === 'user' ? 'rgba(59, 130, 246, 0.2)' : 'rgba(255, 255, 255, 0.06)'),
+                width: '100%',
+                boxSizing: 'border-box',
+                flexShrink: 0
               }}
             >
-              <div className="avatar small mt-1">
+              <div className="avatar small mt-1" style={{ flexShrink: 0 }}>
                 {m.role === 'user' ? <User size={14} /> : <Bot size={14} />}
               </div>
-              <div style={{ flex: 1 }}>
+              <div style={{ flex: 1, minWidth: 0 }}>
                 <small className="mut block" style={{ fontSize: '11px', marginBottom: '4px' }}>
                   {m.role === 'user' ? 'You' : 'Portline Assistant (Gemma 2)'}
                 </small>
-                <div style={{ fontSize: '14px', lineHeight: '1.5' }}>
+                <div style={{ fontSize: '14px', lineHeight: '1.5', wordBreak: 'break-word' }}>
                   <FormattedText text={m.text} />
                 </div>
               </div>
             </div>
           ))}
 
+          {/* Dedicated Status Banner for Initialization / Memory Loading */}
+          {statusNotice && (
+            <div 
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: '10px',
+                padding: '10px 14px',
+                borderRadius: '6px',
+                backgroundColor: 'rgba(245, 158, 11, 0.1)',
+                border: '1px solid rgba(245, 158, 11, 0.3)',
+                color: '#f59e0b',
+                fontSize: '13px',
+                flexShrink: 0
+              }}
+            >
+              <AlertCircle size={16} style={{ flexShrink: 0 }} />
+              <span>{statusNotice}</span>
+            </div>
+          )}
+
           {thinking && (
-            <div className="row gap-2 mut" style={{ padding: '8px 12px' }}>
+            <div className="row gap-2 mut" style={{ padding: '8px 12px', flexShrink: 0 }}>
               <Sparkles size={16} className="animate-spin" />
               <small>Gemma 2 (2B) is processing your question…</small>
             </div>
@@ -242,7 +286,7 @@ export default function NewSection() {
         </div>
 
         {/* Prompt Suggestions & Input Bar */}
-        <div style={{ borderTop: '1px solid rgba(255, 255, 255, 0.08)', paddingTop: '16px' }}>
+        <div style={{ borderTop: '1px solid rgba(255, 255, 255, 0.08)', paddingTop: '16px', flexShrink: 0 }}>
           <div className="chips" style={{ marginBottom: '12px', display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
             {PROMPT_SUGGESTIONS.map((s, idx) => (
               <button 

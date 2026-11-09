@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Navigate, NavLink, Outlet, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
-import { Activity, Boxes, CloudUpload, LogOut, Moon, ScanSearch, Sparkles, Sun, Users as UsersIcon } from 'lucide-react';
+import { Activity, ArrowLeftRight, Boxes, CloudUpload, LogOut, Moon, ScanSearch, Sparkles, Sun, Users as UsersIcon } from 'lucide-react';
 import { api } from './api.js';
 import { useAuth } from './auth.jsx';
 import Login from './pages/Login.jsx';
@@ -10,6 +10,7 @@ import Review from './pages/Review.jsx';
 import Audit from './pages/Audit.jsx';
 import UsersPage from './pages/Users.jsx';
 import NewSection from './pages/NewSection.jsx';
+import CompareWorkspace from './pages/CompareWorkspace.jsx';
 
 export const useTheme = () => {
   const [t, setT] = useState(document.documentElement.dataset.theme);
@@ -24,6 +25,7 @@ const CRUMB = {
   '/intake': 'Document intake',
   '/review': 'Review workspace',
   '/copilot': 'AI Copilot',
+  '/compare': 'Compare & Analyze',
   '/audit': 'Audit & accuracy',
   '/users': 'Team access'
 };
@@ -50,6 +52,7 @@ function Shell() {
     ['/intake', 'Document intake', CloudUpload],
     ['/review', 'Review workspace', ScanSearch],
     ['/copilot', 'AI Copilot', Sparkles],
+    ['/compare', 'Compare & Analyze', ArrowLeftRight],
     ...(isManager ? [['/audit', 'Audit & accuracy', Activity]] : []),
     ...(isAdmin ? [['/users', 'Team access', UsersIcon]] : [])
   ];
@@ -104,6 +107,7 @@ export default function App() {
         <Route path="review" element={<Review />} />
         <Route path="review/:id" element={<Review />} />
         <Route path="copilot" element={<NewSection />} />
+        <Route path="compare" element={<CompareWorkspace />} />
         <Route path="audit" element={<Audit />} />
         <Route path="users" element={<UsersPage />} />
       </Route>

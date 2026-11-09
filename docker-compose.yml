@@ -8,6 +8,8 @@ services:
       POSTGRES_USER: customs
       POSTGRES_PASSWORD: customs
       POSTGRES_DB: customs_idp
+    ports:
+      - "5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -31,23 +33,18 @@ services:
       DATABASE_URL: postgresql+asyncpg://customs:customs@db:5432/customs_idp
       REDIS_URL: redis://redis:6379/0
       OLLAMA_BASE_URL: http://ollama:11434
-      HF_TOKEN: ${HF_TOKEN:?HF_TOKEN must be set in your .env file}
+      HF_TOKEN: ${HF_TOKEN}
     ports:
       - "8000:8000"
     volumes:
       - uploads:/app/storage
-      - hfcache:/root/.cache/huggingface
+      - ${USERPROFILE}/.cache/huggingface:/root/.cache/huggingface
     depends_on:
       db:
         condition: service_healthy
       redis:
         condition: service_healthy
 
-  # Optional fully-local AI:
-  # docker compose --profile local-ai up --build
-  # Then: docker compose exec ollama ollama pull gemma3:4b
-  #       docker compose exec ollama ollama pull embeddinggemma
-  # Set AI_PROVIDER=ollama in .env when using the local Ollama provider.
   ollama:
     image: ollama/ollama:latest
     profiles:
@@ -60,5 +57,3 @@ services:
 volumes:
   pgdata:
   uploads:
-  ollama:
-  hfcache:

@@ -24,9 +24,6 @@ logger = logging.getLogger(__name__)
 async def lifespan(_: FastAPI):
     init_store()
 
-    # Load Gemma 2 in a background thread so FastAPI starts instantly
-    asyncio.create_task(asyncio.to_thread(init_gemma_model))
-
     if settings.AUTO_CREATE_TABLES:
         await create_all_tables()
     async with async_session_factory() as session:
@@ -35,6 +32,11 @@ async def lifespan(_: FastAPI):
         from seed.seed_data import seed_demo
 
         await seed_demo()
+
+    # Schedule model loading in the background AFTER server startup completes
+    loop = asyncio.get_running_loop()
+    loop.call_soon(lambda: asyncio.create_task(asyncio.to_thread(init_gemma_model)))
+
     yield
     await close_store()
     await engine.dispose()
@@ -49,12 +51,11 @@ app = FastAPI(
     openapi_url="/openapi.json" if settings.docs_enabled else None,
 )
 
-# Unconditional CORS configuration for local development and browser clients
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=False,
-    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allow_origin_regex=r"http://(localhost|127\.0\.0\.1)(:\d+)?",
+    allow_credentials=True,
+    allow_methods=["*"],
     allow_headers=["*"],
     expose_headers=["Content-Disposition", "Authorization"],
 )
@@ -69,25 +70,38 @@ async def security_middleware(request: Request, call_next):
     if declared and declared.isdigit() and int(declared) > settings.MAX_UPLOAD_BYTES + 2 * 1024 * 1024:
         return JSONResponse({"detail": "Request body too large"}, status_code=413)
 
-    response = await call_next(request)
-    response.headers.setdefault("X-Content-Type-Options", "nosniff")
-    response.headers.setdefault("X-Frame-Options", "DENY")
-    response.headers.setdefault("Referrer-Policy", "no-referrer")
-    response.headers.setdefault("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
-    if request.url.path.startswith(settings.API_V1_PREFIX):
-        response.headers.setdefault("Cache-Control", "no-store")
-    return response
+    try:
+        response = await call_next(request)
+        response.headers.setdefault("X-Content-Type-Options", "nosniff")
+        response.headers.setdefault("X-Frame-Options", "DENY")
+        response.headers.setdefault("Referrer-Policy", "no-referrer")
+        response.headers.setdefault("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+        if request.url.path.startswith(settings.API_V1_PREFIX):
+            response.headers.setdefault("Cache-Control", "no-store")
+        return response
+    except Exception as exc:
+        logger.error("Error handling request %s: %s", request.url.path, str(exc), exc_info=True)
+        return JSONResponse(
+            status_code=500,
+            content={"detail": f"Internal server error: {str(exc)}"},
+            headers={
+                "Access-Control-Allow-Origin": request.headers.get("origin", "*"),
+                "Access-Control-Allow-Credentials": "true",
+                "Access-Control-Allow-Headers": "*",
+                "Access-Control-Allow-Methods": "*",
+            },
+        )
 
 
 @app.exception_handler(Exception)
-async def global_exception_handler(_: Request, exc: Exception):
-    """Attaches CORS headers explicitly to 500 server error responses."""
+async def global_exception_handler(request: Request, exc: Exception):
     logger.error("Unhandled internal server exception: %s", str(exc), exc_info=True)
     return JSONResponse(
         status_code=500,
         content={"detail": f"Internal server error: {str(exc)}"},
         headers={
-            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Origin": request.headers.get("origin", "*"),
+            "Access-Control-Allow-Credentials": "true",
             "Access-Control-Allow-Headers": "*",
             "Access-Control-Allow-Methods": "*",
         },
@@ -95,24 +109,25 @@ async def global_exception_handler(_: Request, exc: Exception):
 
 
 @app.exception_handler(RedisError)
-async def redis_down(_: Request, exc: RedisError):
+async def redis_down(request: Request, exc: RedisError):
     logger.error("Redis failure: %s", type(exc).__name__)
     return JSONResponse(
         {"detail": "Auth/cache backend unavailable, retry shortly"},
         status_code=503,
-        headers={"Access-Control-Allow-Origin": "*"},
+        headers={
+            "Access-Control-Allow-Origin": request.headers.get("origin", "*"),
+            "Access-Control-Allow-Credentials": "true",
+        },
     )
 
 
 @app.get("/", include_in_schema=False)
 async def root_redirect():
-    """Redirects root path requests to Swagger interactive API documentation."""
     return RedirectResponse(url="/docs")
 
 
 @app.get("/health", tags=["meta"])
 async def health():
-    """Liveness probe for system dependencies."""
     from sqlalchemy import text
 
     async with engine.connect() as conn:
@@ -120,6 +135,5 @@ async def health():
     return {"status": "ok", "redis": await get_store().ping(), "ai_provider": settings.AI_PROVIDER}
 
 
-# Include core routes and Gemma 2 LLM routes
 app.include_router(api_router, prefix=settings.API_V1_PREFIX)
 app.include_router(llm_router, prefix=settings.API_V1_PREFIX)

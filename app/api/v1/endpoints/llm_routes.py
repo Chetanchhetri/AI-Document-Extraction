@@ -19,6 +19,11 @@ class HsnRequest(BaseModel):
     candidates: Optional[List[Dict[str, Any]]] = None
 
 
+class CompareRequest(BaseModel):
+    shipments: List[Dict[str, Any]]
+    analysis_type: Optional[str] = "general"
+
+
 @router.post("/copilot/chat", tags=["ai"])
 async def copilot_chat(req: CopilotRequest):
     """Context-aware AI Copilot Q&A endpoint using Gemma 2 (2B)."""
@@ -69,3 +74,44 @@ async def hsn_suggest(req: HsnRequest):
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Gemma 2 inference error: {str(e)}")
+
+
+@router.post("/copilot/compare", tags=["ai"])
+async def compare_shipments(req: CompareRequest):
+    """Comparative analysis engine for multi-shipment and supplier evaluation using Gemma 2 (2B)."""
+    if len(req.shipments) < 2:
+        raise HTTPException(status_code=400, detail="At least 2 shipments are required for comparative analysis.")
+
+    summary_list = []
+    for index, item in enumerate(req.shipments, start=1):
+        s_info = item.get("shipment", {})
+        fields = item.get("fields", [])
+        checks = item.get("checks", [])
+        failed_count = len([c for c in checks if c.get("failed")])
+        summary_list.append(
+            f"Shipment {index} ({s_info.get('shipment_code', 'Unknown')}):\n"
+            f"- Supplier/Company: {s_info.get('supplier_name', 'N/A')}\n"
+            f"- Status: {s_info.get('status', 'N/A')}\n"
+            f"- Extracted Fields Count: {len(fields)}\n"
+            f"- Discrepancies Count: {failed_count}\n"
+            f"- Key Fields: {[{f.get('name'): f.get('value')} for f in fields[:6]]}"
+        )
+
+    joined_summary = "\n\n".join(summary_list)
+
+    system_prompt = (
+        "You are a senior customs compliance and supply-chain auditor. Compare the given shipments/suppliers. "
+        "Highlight variance in valuation, total weights, country origins, discrepancy risk, and supply chain consistency. "
+        "Organize output into 3 bulleted sections: **Key Variances**, **Compliance & Discrepancy Risk**, and **Executive Recommendation**."
+    )
+
+    user_prompt = f"Comparative Payload Data:\n\n{joined_summary}"
+
+    try:
+        report = generate_gemma_response(system_prompt, user_prompt, max_tokens=400)
+        return {
+            "compared_count": len(req.shipments),
+            "report": report,
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Gemma 2 comparative analysis error: {str(e)}")
