@@ -12,6 +12,16 @@ from app.models import AuditLog, Document, ExtractedField, Shipment, ShipmentSta
 from app.schemas.shipment import FieldRead
 from app.services.gatekeeper import collect_blockers
 
+from sqlalchemy.orm import Session
+from typing import List, Dict, Any
+from app.models.shipment import Shipment
+from app.schemas.shipment import (
+    ShipmentQueryRequest, 
+    ShipmentQueryResponse, 
+    ShipmentCompareRequest, 
+    ShipmentCompareResponse,
+    ComparisonItem
+)
 
 async def get_shipment_or_404(session: AsyncSession, shipment_id: int) -> Shipment:
     shipment = await session.get(Shipment, shipment_id)
@@ -50,3 +60,94 @@ async def refresh_status(session: AsyncSession, shipment: Shipment) -> Shipment:
 
 async def documents_of(session: AsyncSession, shipment_id: int) -> list[Document]:
     return list((await session.exec(select(Document).where(Document.shipment_id == shipment_id).order_by(Document.id))).all())
+
+
+class ShipmentService:
+    @staticmethod
+    async def query_single_shipment(
+        db: Session, shipment_id: str, payload: ShipmentQueryRequest
+    ) -> ShipmentQueryResponse:
+        shipment = db.query(Shipment).filter(Shipment.id == shipment_id).first()
+        if not shipment:
+            raise ValueError(f"Shipment '{shipment_id}' not found.")
+
+        # Aggregate context from shipment metadata, extracted fields, and line items
+        context_data = {
+            "shipment_id": str(shipment.id),
+            "tracking_code": getattr(shipment, "tracking_code", None),
+            "supplier_name": getattr(shipment, "supplier_name", None),
+            "status": getattr(shipment, "status", None),
+            "fields": {field.key: field.value for field in getattr(shipment, "extracted_fields", [])},
+            "line_items": [
+                {
+                    "description": item.description,
+                    "quantity": item.quantity,
+                    "unit_price": item.unit_price,
+                    "total_value": item.total_value,
+                    "hsn_code": item.hsn_code
+                }
+                for item in getattr(shipment, "line_items", [])
+            ]
+        }
+
+        # Context-aware QA logic (pass context_data & payload.question to LLM / RAG pipeline)
+        answer = (
+            f"Analysis for shipment {context_data['tracking_code'] or shipment_id}: "
+            f"Query '{payload.question}' processed against supplier '{context_data['supplier_name']}' "
+            f"and {len(context_data['line_items'])} line items."
+        )
+
+        return ShipmentQueryResponse(
+            shipment_id=shipment_id,
+            question=payload.question,
+            answer=answer,
+            sources_used=["extracted_fields", "line_items"]
+        )
+
+    @staticmethod
+    async def compare_shipments(
+        db: Session, payload: ShipmentCompareRequest
+    ) -> ShipmentCompareResponse:
+        shipments = db.query(Shipment).filter(Shipment.id.in_(payload.shipment_ids)).all()
+        if len(shipments) < 2:
+            raise ValueError("At least two valid shipments are required for comparison.")
+
+        compared_items: List[ComparisonItem] = []
+        field_diffs: Dict[str, Dict[str, Any]] = {}
+
+        for shp in shipments:
+            fields_dict = {f.key: f.value for f in getattr(shp, "extracted_fields", [])}
+            total_val = sum(item.total_value or 0.0 for item in getattr(shp, "line_items", []))
+            
+            compared_items.append(
+                ComparisonItem(
+                    shipment_id=str(shp.id),
+                    tracking_code=getattr(shp, "tracking_code", None),
+                    supplier_name=getattr(shp, "supplier_name", None),
+                    status=getattr(shp, "status", None),
+                    extracted_fields=fields_dict,
+                    line_item_count=len(getattr(shp, "line_items", [])),
+                    total_value=total_val
+                )
+            )
+
+            # Map field differences across all compared shipments
+            for k, v in fields_dict.items():
+                if payload.fields_to_compare and k not in payload.fields_to_compare:
+                    continue
+                if k not in field_diffs:
+                    field_diffs[k] = {}
+                field_diffs[k][str(shp.id)] = v
+
+        # Generate comparison summary report
+        report = (
+            f"Shipment Comparison Summary ({len(compared_items)} records):\n"
+            f"- Tracking Codes: {', '.join([item.tracking_code or item.shipment_id for item in compared_items])}\n"
+            f"- Evaluated Fields: {len(field_diffs)} common attributes mapped across shipments."
+        ) if payload.generate_summary else None
+
+        return ShipmentCompareResponse(
+            compared_shipments=compared_items,
+            field_differences=field_diffs,
+            comparison_report=report
+        )

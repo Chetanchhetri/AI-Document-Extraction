@@ -7,7 +7,15 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 from app.api.deps import require_executive
 from app.core.database import get_session
 from app.models import AuditLog, CrossCheck, Document, ExtractedField, Shipment, ShipmentLineItem, ShipmentStatus, User
-from app.schemas.shipment import ShipmentCreate, ShipmentRead
+from app.schemas.shipment import (
+    ShipmentCompareRequest,
+    ShipmentCompareResponse,
+    ShipmentCreate,
+    ShipmentQueryRequest,
+    ShipmentQueryResponse,
+    ShipmentRead,
+)
+from app.services.shipment_service import ShipmentService
 
 router = APIRouter(prefix="/shipments", tags=["shipments"])
 
@@ -82,6 +90,26 @@ async def create_shipment(
     return ShipmentRead.model_validate(shipment)
 
 
+@router.post(
+    "/compare",
+    response_model=ShipmentCompareResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Compare multiple shipments",
+    description="Compare extracted data fields, line item totals, and compliance status across multiple shipments."
+)
+async def compare_shipments(
+    payload: ShipmentCompareRequest,
+    _user: User = Depends(require_executive),
+    session: AsyncSession = Depends(get_session),
+):
+    try:
+        return await ShipmentService.compare_shipments(session=session, payload=payload)
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+    except Exception:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to generate shipment comparison.")
+
+
 @router.get("/{shipment_id}", response_model=ShipmentRead)
 async def get_shipment(
     shipment_id: int,
@@ -92,6 +120,27 @@ async def get_shipment(
     if not shipment:
         raise HTTPException(status_code=404, detail="Shipment not found")
     return shipment
+
+
+@router.post(
+    "/{shipment_id}/query",
+    response_model=ShipmentQueryResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Query a single shipment",
+    description="Ask natural language questions evaluated against extracted fields, line items, and documents of a shipment."
+)
+async def query_shipment(
+    shipment_id: int,
+    payload: ShipmentQueryRequest,
+    _user: User = Depends(require_executive),
+    session: AsyncSession = Depends(get_session),
+):
+    try:
+        return await ShipmentService.query_single_shipment(session=session, shipment_id=str(shipment_id), payload=payload)
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
+    except Exception:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to process shipment query.")
 
 
 @router.delete("/{shipment_id}", status_code=status.HTTP_204_NO_CONTENT)

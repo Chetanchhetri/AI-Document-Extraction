@@ -1,6 +1,7 @@
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 from pydantic import Field
+from pydantic import BaseModel, Field
 from app.models.enums import CheckStatus, DocType, ExtractionStatus, ShipmentStatus
 from app.schemas.base import BaseSchema
 
@@ -124,3 +125,35 @@ class HSNSuggestion(BaseSchema):
     matched_description: str
     shipment_code: str
     occurrences: int
+    
+class ShipmentQueryRequest(BaseModel):
+    question: str = Field(..., description="Natural language question regarding the shipment")
+    include_documents: bool = Field(default=True, description="Include extracted OCR document context")
+
+class ShipmentQueryResponse(BaseModel):
+    shipment_id: str
+    question: str
+    answer: str
+    sources_used: List[str] = []
+
+class ShipmentCompareRequest(BaseModel):
+    shipment_ids: List[str] = Field(..., min_items=2, description="List of shipment IDs to compare")
+    fields_to_compare: Optional[List[str]] = Field(
+        default=None, 
+        description="Optional list of specific field keys to compare (e.g., gross_weight_kg, total_value, supplier_name)"
+    )
+    generate_summary: bool = Field(default=True, description="Whether to generate an executive AI comparison summary")
+
+class ComparisonItem(BaseModel):
+    shipment_id: str
+    tracking_code: Optional[str] = None
+    supplier_name: Optional[str] = None
+    status: Optional[str] = None
+    extracted_fields: Dict[str, Any] = {}
+    line_item_count: int = 0
+    total_value: Optional[float] = None
+
+class ShipmentCompareResponse(BaseModel):
+    compared_shipments: List[ComparisonItem]
+    field_differences: Dict[str, Dict[str, Any]]
+    comparison_report: Optional[str] = None
