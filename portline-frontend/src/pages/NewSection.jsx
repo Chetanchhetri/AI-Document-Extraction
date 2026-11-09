@@ -7,7 +7,7 @@ import {
   Sparkles, 
   User 
 } from 'lucide-react';
-import { api } from '../api.js';
+import { api, getBase } from '../api.js';
 import { arr, normReview } from '../normalize.js';
 import { activeShipment } from '../store.js';
 import { Badge, PageHead, useToast } from '../ui.jsx';
@@ -19,7 +19,7 @@ const PROMPT_SUGGESTIONS = [
   "Summarize extracted fields and discrepancies"
 ];
 
-// Helper to render **bold** syntax cleanly as <b> elements
+// Renders markdown **bold** as <b> HTML tags
 function FormattedText({ text }) {
   if (!text) return null;
   const lines = text.split('\n');
@@ -55,20 +55,20 @@ export default function NewSection() {
     {
       id: 'welcome',
       role: 'assistant',
-      text: 'Hello! Ask me any question about shipment weight, unit quantities, country of origin, or extracted document fields.'
+      text: 'Hello! I am your Portline AI Assistant powered by Gemma 2 (2B). Ask me any question about your shipment documents.'
     }
   ]);
   const [thinking, setThinking] = useState(false);
   const chatEndRef = useRef(null);
 
-  // Load available shipments list
+  // Load available shipments
   useEffect(() => {
     api.shipments({ limit: 100 })
       .then((r) => setShips(arr(r)))
       .catch((e) => toast(e.message, 'err'));
   }, [toast]);
 
-  // Fetch full review data (context) when selected shipment changes
+  // Fetch target shipment context
   const loadShipmentData = useCallback(async (id) => {
     if (!id) {
       setShipmentContext(null);
@@ -93,12 +93,12 @@ export default function NewSection() {
     }
   }, [selectedId, loadShipmentData]);
 
-  // Auto-scroll chat to bottom
+  // Auto-scroll chat
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages, thinking]);
 
-  // Direct & Dynamic Field Intelligence Handler
+  // Routes directly to local Gemma 2 (2B) Backend API
   const askLLM = async (userQuestion) => {
     if (!userQuestion.trim()) return;
 
@@ -108,111 +108,31 @@ export default function NewSection() {
     setThinking(true);
 
     try {
-      let replyText = '';
-      const qLower = userQuestion.toLowerCase().trim();
+      const baseUrl = getBase() || 'http://localhost:8000';
+      const res = await fetch(`${baseUrl}/api/v1/copilot/chat`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          query: userQuestion,
+          shipment_code: shipmentContext?.shipment?.shipment_code,
+          supplier_name: shipmentContext?.shipment?.supplier_name,
+          context: shipmentContext
+        })
+      });
 
-      // 1. WORKSPACE-WIDE SHIPMENT COUNT
-      if (/\b(how many|count|total)\b/.test(qLower) && qLower.includes('shipment')) {
-        replyText = `There are currently **${ships.length} shipment(s)** in this workspace.`;
-      } 
-      else if (!shipmentContext) {
-        replyText = "Please select a shipment from the dropdown above to inspect its context.";
-      } 
-      else {
-        const { shipment, fields, checks, lines, docs, blockers, ready } = shipmentContext;
-
-        const findField = (...terms) => fields.find((f) => {
-          const name = f.name.toLowerCase().replace(/_/g, ' ');
-          return terms.some((term) => name.includes(term));
-        });
-
-        const getCountry = () => {
-          const match = shipment.supplier_name?.match(/\(([^)]+)\)/);
-          if (match) return match[1];
-          const origin = findField('country', 'origin', 'loading', 'seller_country');
-          return origin?.value || 'Unspecified';
-        };
-
-        // 2. WEIGHT / MASS QUERIES
-        if (/\b(weight|gross|net|kg|lbs|mass|ton|tons)\b/.test(qLower)) {
-          const weightField = findField('weight', 'gross_weight', 'net_weight', 'total_weight');
-          if (weightField && weightField.value) {
-            replyText = `The weight of **${shipment.shipment_code}** is **${weightField.value}** (${weightField.name.replace(/_/g, ' ')}).`;
-          } else {
-            replyText = `No weight field was extracted for **${shipment.shipment_code}**.`;
-          }
-        }
-        // 3. UNITS / QUANTITY / PACKAGES / PIECES
-        else if (/\b(unit|units|quantity|qty|package|packages|piece|pieces|carton|cartons|box|boxes|pcs)\b/.test(qLower)) {
-          const qtyField = findField('quantity', 'total_quantity', 'total_packages', 'packages', 'units', 'cartons');
-          const totalLineQty = lines.reduce((acc, curr) => acc + (Number(curr.quantity) || 0), 0);
-
-          if (qtyField && qtyField.value) {
-            replyText = `**${shipment.shipment_code}** has **${qtyField.value}** (${qtyField.name.replace(/_/g, ' ')}).`;
-          } else if (totalLineQty > 0) {
-            replyText = `**${shipment.shipment_code}** contains **${totalLineQty} units** across ${lines.length} extracted line item(s).`;
-          } else if (lines.length > 0) {
-            replyText = `**${shipment.shipment_code}** has **${lines.length} line item(s)** extracted from the invoice.`;
-          } else {
-            replyText = `No unit quantity or line items were found in the extracted documents for **${shipment.shipment_code}**.`;
-          }
-        }
-        // 4. COUNTRY / ORIGIN / SUPPLIER
-        else if (/\b(country|county|origin|where|supplier)\b/.test(qLower)) {
-          replyText = `Shipment **${shipment.shipment_code}** (${shipment.supplier_name}) belongs to **${getCountry()}**.`;
-        }
-        // 5. VALUE / PRICE / CURRENCY / AMOUNT / INVOICE TOTAL
-        else if (/\b(price|cost|value|amount|currency|pay|payment|total|invoice value)\b/.test(qLower)) {
-          const valField = findField('total', 'amount', 'invoice_value', 'grand_total', 'currency');
-          if (valField && valField.value) {
-            replyText = `The total value for **${shipment.shipment_code}** is **${valField.value}**.`;
-          } else {
-            replyText = `No total invoice value or currency was extracted for **${shipment.shipment_code}**.`;
-          }
-        }
-        // 6. DISCREPANCIES / CROSS-CHECKS
-        else if (/\b(discrepancy|discrepancies|mismatch|issue|error|check|checks)\b/.test(qLower)) {
-          const failedChecks = checks.filter((c) => c.failed);
-          if (failedChecks.length === 0) {
-            replyText = `No discrepancies found for **${shipment.shipment_code}**. All cross-checks passed.`;
-          } else {
-            replyText = `Found **${failedChecks.length} issue(s)** for **${shipment.shipment_code}**:\n` +
-              failedChecks.map((c) => `• **${c.rule}**: ${c.msg || 'Mismatch'}`).join('\n');
-          }
-        }
-        // 7. EXTRACTED FIELDS LISTING / SUMMARY
-        else if (/\b(field|fields|extract|summary|summarize)\b/.test(qLower)) {
-          const lowConf = fields.filter((f) => f.low && !f.verified).length;
-          replyText = `**${shipment.shipment_code} Summary**:\n` +
-            `• Extracted Fields: ${fields.length} (${lowConf} pending review)\n` +
-            `• Documents: ${docs.length}/3 uploaded\n` +
-            `• Discrepancies: ${checks.filter((c) => c.failed).length}\n` +
-            `• Export Status: ${ready ? 'Ready to File ✅' : 'Blocked ⚠️'}`;
-        }
-        // 8. DYNAMIC FIELD LOOKUP (Fallback for specific field names)
-        else {
-          const words = qLower.replace(/[^\w\s]/gi, '').split(/\s+/).filter((w) => w.length > 2);
-          const matchedField = fields.find((f) => {
-            const fieldName = f.name.toLowerCase().replace(/_/g, ' ');
-            return words.some((word) => fieldName.includes(word));
-          });
-
-          if (matchedField) {
-            replyText = `**${matchedField.name.replace(/_/g, ' ')}** for **${shipment.shipment_code}**: **${matchedField.value || '—'}**.`;
-          } else {
-            replyText = `Shipment **${shipment.shipment_code}** (${shipment.supplier_name}) — Status: **${shipment.status.replace('_', ' ')}**.`;
-          }
-        }
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}));
+        throw new Error(errData.detail || `Server error (${res.status})`);
       }
 
-      await new Promise((res) => setTimeout(res, 250));
+      const data = await res.json();
 
       setMessages((prev) => [
         ...prev,
-        { id: (Date.now() + 1).toString(), role: 'assistant', text: replyText }
+        { id: Date.now().toString(), role: 'assistant', text: data.reply }
       ]);
     } catch (err) {
-      toast(`Error: ${err.message}`, 'err');
+      toast(`Gemma 2 API Error: ${err.message}`, 'err');
     } finally {
       setThinking(false);
     }
@@ -221,7 +141,7 @@ export default function NewSection() {
   return (
     <>
       <PageHead 
-        title="Shipment AI Assistant" 
+        title="AI Copilot" 
         sub="Ask context-aware questions about your customs documents, extraction confidence, and cross-checks."
       >
         <button className="ghost" onClick={() => loadShipmentData(selectedId)}>
@@ -303,7 +223,7 @@ export default function NewSection() {
               </div>
               <div style={{ flex: 1 }}>
                 <small className="mut block" style={{ fontSize: '11px', marginBottom: '4px' }}>
-                  {m.role === 'user' ? 'You' : 'Portline Assistant'}
+                  {m.role === 'user' ? 'You' : 'Portline Assistant (Gemma 2)'}
                 </small>
                 <div style={{ fontSize: '14px', lineHeight: '1.5' }}>
                   <FormattedText text={m.text} />
@@ -315,7 +235,7 @@ export default function NewSection() {
           {thinking && (
             <div className="row gap-2 mut" style={{ padding: '8px 12px' }}>
               <Sparkles size={16} className="animate-spin" />
-              <small>Processing question…</small>
+              <small>Gemma 2 (2B) is processing your question…</small>
             </div>
           )}
           <div ref={chatEndRef} />
