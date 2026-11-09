@@ -1,185 +1,124 @@
-# Production Deployment Guide
+# Production & Local Deployment Guide
 
-This document outlines standard procedures for deploying, configuring, and maintaining the **AI-Powered Document Extraction Platform** in production environments.
+This document provides deployment guidelines, performance optimizations, and container configurations for running **Portline IDP** with local **Gemma 2 (2B)** inference.
 
 ---
 
-## System Requirements
+## Hardware & System Requirements
 
-### Hardware / Resource Recommendations
+### Recommended Server Specifications
 
-| Component | Minimum | Recommended (Production) |
+| Resource | Minimum (Development) | Recommended (Production) |
 | :--- | :--- | :--- |
-| **CPU** | 2 vCPU | 4+ vCPU |
-| **RAM** | 4 GB | 8 - 16 GB |
-| **Storage** | 20 GB SSD | 100+ GB NVMe SSD |
-| **Network** | 100 Mbps | 1 Gbps |
+| **CPU** | 4 Cores (x86-64) | 8+ Cores |
+| **RAM** | 8 GB | 16 GB - 32 GB |
+| **Storage** | 30 GB SSD | 100+ GB NVMe SSD |
+| **Host HF Cache** | ~3 GB Free Space | ~10 GB Free Space |
 
 ---
 
-## Architecture Topology
+## Container Architecture (`docker-compose.yml`)
 
-In a production environment, deployment is divided into:
-1. **Application Container (FastAPI + Uvicorn)**
-2. **Database (Managed PostgreSQL Instance / Cloud SQL)**
-3. **Cache & Worker Broker (Managed Redis Cluster)**
-4. **Reverse Proxy / Load Balancer (NGINX / AWS ALB / Traefik)**
-5. **Static Frontend (Vite Build hosted on CDN/Nginx)**
-
----
-
-## Environment Configuration
-
-Ensure the following production environment variables are properly populated in your deployment secret manager or `.env` file:
-
-```env
-# Application Settings
-ENVIRONMENT=production
-DEBUG=false
-PROJECT_NAME="AI Document Processing Engine"
-API_V1_STR="/api/v1"
-ALLOWED_HOSTS=["https://your-domain.com"]
-
-# Security & Credentials
-SECRET_KEY="<generate-256-bit-secure-random-string>"
-ENCRYPTION_KEY="<fernet-key-for-data-at-rest>"
-ACCESS_TOKEN_EXPIRE_MINUTES=480
-
-# Database Configuration (PostgreSQL)
-POSTGRES_SERVER="db.your-cloud-provider.internal"
-POSTGRES_USER="db_admin"
-POSTGRES_PASSWORD="<strong-database-password>"
-POSTGRES_DB="document_extraction_prod"
-POSTGRES_PORT=5432
-SQLALCHEMY_DATABASE_URI="postgresql://db_admin:<password>@db.your-cloud-provider.internal:5432/document_extraction_prod"
-
-# Redis Cache & Broker
-REDIS_HOST="redis.your-cloud-provider.internal"
-REDIS_PORT=6379
-REDIS_PASSWORD="<secure-redis-password>"
-
-# Vision & AI API Credentials
-VISION_MODEL_API_KEY="<production-vision-api-key>"
-EMBEDDINGS_MODEL_API_KEY="<production-embedding-api-key>"
-
-# Mail Service
-SMTP_SERVER="smtp.sendgrid.net"
-SMTP_PORT=587
-SMTP_USER="apikey"
-SMTP_PASSWORD="<smtp-api-key>"
-EMAIL_FROM="noreply@your-domain.com"
-```
-
----
-
-## Containerized Deployment with Docker
-
-### 1. Build Production Image
-
-The application uses a optimized Dockerfile. Build the production image:
-
-```bash
-docker build -t app-document-extraction:v1.0.0 .
-```
-
-### 2. Multi-Container Orchestration (`docker-compose.prod.yml`)
-
-Create a production compose configuration:
+The production deployment mounts the host system's Hugging Face cache directory into the API container. This prevents redundant model downloads on container restarts and preserves cached `.safetensors` files.
 
 ```yaml
-version: '3.8'
-
 services:
-  app:
-    image: app-document-extraction:v1.0.0
-    restart: always
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: customs
+      POSTGRES_PASSWORD: customs
+      POSTGRES_DB: customs_idp
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U customs -d customs_idp"]
+      interval: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--save", "", "--maxmemory", "64mb", "--maxmemory-policy", "noeviction"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      retries: 10
+
+  api:
+    build: .
     env_file:
-      - .env.production
+      - .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://customs:customs@db:5432/customs_idp
+      REDIS_URL: redis://redis:6379/0
+      OLLAMA_BASE_URL: http://ollama:11434
+      HF_TOKEN: ${HF_TOKEN}
     ports:
       - "8000:8000"
-    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 4
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-
-  frontend:
-    build:
-      context: ./portline-frontend
-      dockerfile: Dockerfile
-    restart: always
-    ports:
-      - "80:80"
-      - "443:443"
+    volumes:
+      - uploads:/app/storage
+      - ${USERPROFILE}/.cache/huggingface:/root/.cache/huggingface
     depends_on:
-      - app
-```
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
 
-### 3. Executing Migrations
-
-Before launching traffic to the new release, execute Alembic migrations:
-
-```bash
-docker-compose -f docker-compose.prod.yml run --rm app alembic upgrade head
-```
-
----
-
-## Reverse Proxy Setup (NGINX Example)
-
-Configure NGINX as an edge proxy to terminate TLS/SSL and route requests to backend service workers:
-
-```nginx
-server {
-    listen 80;
-    server_name api.your-domain.com;
-    return 301 https://$host$request_uri;
-}
-
-server {
-    listen 443 ssl http2;
-    server_name api.your-domain.com;
-
-    ssl_certificate /etc/letsencrypt/live/api.your-domain.com/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/api.your-domain.com/privkey.pem;
-
-    client_max_body_size 50M; # Accommodate high-resolution PDF uploads
-
-    location / {
-        proxy_pass http://127.0.0.1:8000;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-    }
-}
+volumes:
+  pgdata:
+  uploads:
 ```
 
 ---
 
-## Security & Operational Checklist
+## Non-Blocking Startup & Thread Isolation
 
-- [ ] **Data Encryption:** Verify Fernet `ENCRYPTION_KEY` is loaded in secret store and not committed to git.
-- [ ] **SSL/TLS:** Enforce TLS 1.2+ on all external endpoints.
-- [ ] **Rate Limiting:** Enable rate limiting at NGINX or gateway layer to prevent denial-of-service on Vision extraction endpoints.
-- [ ] **Database Connection Pooling:** Set maximum pool size according to worker count (`pool_size=20`, `max_overflow=10`).
-- [ ] **Log Retention:** Forward application logs (`JSON` formatted via `app/core/logging.py`) to a central collector (e.g., Datadog, ELK, AWS CloudWatch).
+Loading large language models into CPU memory during FastAPI startup can block Uvicorn's event loop, resulting in HTTP connection timeouts and CORS errors on incoming login requests.
+
+Portline IDP uses a deferred lifespan handler in `app/main.py`:
+
+```python
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    init_store()
+
+    if settings.AUTO_CREATE_TABLES:
+        await create_all_tables()
+    async with async_session_factory() as session:
+        await ensure_super_admin(session)
+
+    # Schedule model initialization in a background thread AFTER Uvicorn port 8000 opens
+    loop = asyncio.get_running_loop()
+    loop.call_soon(lambda: asyncio.create_task(asyncio.to_thread(init_gemma_model)))
+
+    yield
+    await close_store()
+    await engine.dispose()
+```
 
 ---
 
-## Maintenance & Database Backups
+## Model Pre-Downloading & Cache Management
 
-### Automated PostgreSQL Backup Script
-Run daily cron jobs to backup metadata and extracted entities:
+If model weights need to be updated or pre-cached prior to launching the system, use `snapshot_download` directly inside the Python container environment to avoid PyTorch initialization stalls:
 
-```bash
-pg_dump -U db_admin -h db.your-cloud-provider.internal document_extraction_prod | gzip > /backups/db_backup_$(date +%Y%m%d_%H%M%S).sql.gz
+### 1. Download Model Snapshot into Host Cache
+```powershell
+docker exec -it customs_idp_backend-api-1 python -c "import os; from huggingface_hub import snapshot_download; token = os.getenv('HF_TOKEN'); print('--> Downloading Gemma 2 (2B)...'); snapshot_download(repo_id='google/gemma-2-2b-it', token=token, max_workers=4); print('--> Download Complete!')"
 ```
 
-### Zero-Downtime Migration Process
-1. Deploy updated backend codebase to staging.
-2. Run non-destructive database migrations (`alembic upgrade head`).
-3. Deploy new application containers.
-4. Verify `/health` endpoints.
-5. Decommission older containers.
+### 2. Verify Cached Models inside Container
+```powershell
+docker exec -it customs_idp_backend-api-1 python -c "from huggingface_hub import scan_cache_dir; [print(f'Model: {r.repo_id} | Size: {r.size_on_disk_str}') for r in scan_cache_dir().repos]"
+```
+
+---
+
+## Production Security & Maintenance Checklist
+
+- [ ] **Lock Backend Base URL:** Ensure frontend configuration relies on `import.meta.env.VITE_API_BASE_URL` or static defaults rather than client-side user modifications.
+- [ ] **Secure `HF_TOKEN`:** Store `HF_TOKEN` in secure environment variables or secret vaults; do not commit keys to source control.
+- [ ] **Reverse Proxy SSL Termination:** Deploy NGINX or an AWS ALB in front of port `8000` with strict HTTP-to-HTTPS redirection and TLS 1.2+ encryption.
+- [ ] **CORS Configuration:** Configure `allow_origin_regex` in `app/main.py` to allow authorized frontend production domain origins.
